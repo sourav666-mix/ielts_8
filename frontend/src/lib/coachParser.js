@@ -54,7 +54,9 @@ function parseFaults(block) {
  *  so the coach's feedback drops straight into the scoring pipeline. */
 export function coachToFeedback(raw) {
   const s = parseCoachSections(raw);
-  const bandNum = Number(String(s.BAND || '').replace(/[^\d.]/g, ''));
+  // ⚠ Number('') is 0 — a missing [BAND] must yield NaN, never a band.
+  const bandRaw = String(s.BAND ?? '').replace(/[^\d.]/g, '');
+  const bandNum = bandRaw ? Number(bandRaw) : NaN;
   const halfBand = Number.isFinite(bandNum)
     ? Math.min(9, Math.max(2, Math.round(bandNum * 2) / 2))
     : NaN;

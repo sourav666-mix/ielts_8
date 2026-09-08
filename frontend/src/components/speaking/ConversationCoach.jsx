@@ -32,7 +32,7 @@ import {
   stopAllSpeech, speakOnce, getCoachVoice, ackLine, browserSpeak,
 } from '../../lib/speech.js';
 import { CoachSpeaker } from '../../lib/coachVoice.js';
-import { coachToFeedback, stripMarkers, detectYesNo } from '../../lib/coachParser.js';
+import { coachToFeedback, parseCoachSections, stripMarkers, detectYesNo } from '../../lib/coachParser.js';
 import { api } from '../../lib/api.js';
 import {
   generateRound, roundAverage, finalizeSpeaking, speakingSignals,
@@ -74,7 +74,9 @@ export default function ConversationCoach({ phase, target }) {
   const turnStartRef = useRef(0);
   const swRef = useRef(null);
   const bankedRef = useRef(0);
+  const qIndexRef = useRef(0); qIndexRef.current = qIndex;
   const questionsRef = useRef([]);
+  const hasBegunRef = useRef(false);
 
   const questions = useMemo(() => {
     const r = round;
@@ -132,8 +134,8 @@ export default function ConversationCoach({ phase, target }) {
         useDayStore.getState().upsertSpeakingRound(nr);
         useProfileStore.getState().addTopics('speaking', [r.topic]);
         setQIndex(0);
-        // First boot greets; subsequent rounds flow straight into a question.
-        setStage((s) => (s === 'boot' ? 'greet' : 'asking'));
+        // First boot greets; later rounds flow straight into a question.
+        setStage(hasBegunRef.current ? 'asking' : 'greet');
       })
       .catch((err) => {
         if (alive) setGenError(err?.message || "The coach couldn't prepare this conversation — one more try usually sorts it.");
@@ -141,8 +143,10 @@ export default function ConversationCoach({ phase, target }) {
     return () => { alive = false; };
   }, [genToken, phase]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* ── Mic lifecycle: ONE recognizer for the whole conversation;
-   *    transcripts are routed by the CURRENT stage via handlerRef. ── */
+  /* ── Mic lifecycle: ONE recognizer for the whole conversation, live
+   *    from mount (greet needs to hear "start"); transcripts are routed
+   *    by the CURRENT stage via handlerRef — during coach playback they
+   *    are deliberately ignored so the coach never hears itself. ── */
   useEffect(() => {
     if (captureMode !== 'mic') return undefined;
     const rec = new MicRecognizer({
@@ -158,6 +162,7 @@ export default function ConversationCoach({ phase, target }) {
         : ''),
     });
     recRef.current = rec;
+    rec.start();                          // live from the greeting onward
     return () => { recRef.current = null; rec.abort(); };
   }, [captureMode]);
 
@@ -366,6 +371,7 @@ export default function ConversationCoach({ phase, target }) {
 
   /* ── Greet → first question (voice "start/yes" or the button). ── */
   const beginConversation = useCallback(() => {
+    hasBegunRef.current = true;
     permissionReadyRef.current = false;
     askQuestion(0);
   }, [askQuestion]);
@@ -474,11 +480,26 @@ export default function ConversationCoach({ phase, target }) {
         <div className="panel session-controls">
           <h2 className="title-3">Conversation wrapped</h2>
           <p className="muted">
-            {answered} answer{answered === 1 ? '' : 's'} coached. Your score and the full
-            review are loading…
+            {answered} answer{answered === 1 ? '' : 's'} coached today. Nothing was
+            recorded this time — every answer needs a scoreable band to count.
           </p>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => {
+              useDayStore.getState().resetSpeaking();
+              setRound(null);
+              roundRef.current = null;
+              hasBegunRef.current = false;
+              setAnswered(0);
+              setLastBand(null);
+              setStage('boot');
+              setGenToken((t) => t + 1);
+            }}
+          >
+            Start a fresh conversation
+          </button>
         </div>
-        <LoadingHero kind="speaking-gen" />
       </div>
     );
   }
