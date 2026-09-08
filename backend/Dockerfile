@@ -23,13 +23,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Application code (overlaid by the dev bind mount; canonical here).
 COPY . .
 
+# Non-root runtime user (created BEFORE the data dir that it must own).
+RUN useradd --create-home appuser
+
 # Writable home for the JSON store (store.py writes DATA_FILE here).
 # Baked in, owned by the runtime user — works on any container host.
 RUN mkdir -p /data && chown -R appuser:appuser /data
 ENV DATA_FILE=/data/atlas_data.json
 
-# Non-root runtime. The dev bind mount is only ever read.
-RUN useradd --create-home appuser
 USER appuser
 
 EXPOSE 8000
