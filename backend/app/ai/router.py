@@ -239,3 +239,57 @@ async def chat_json_with_fallback(
 ) -> Any:
     """chat + robust JSON extraction — the shape every content router uses."""
     return await chat_with_fallback(task, messages, json_mode=True, **kwargs)
+
+
+async def chat_stream_with_fallback(
+    task: Task,
+    messages: list,
+    *,
+    targeted: bool = False,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    read_timeout: float | None = None,
+):
+    """Streaming twin of chat_with_fallback: yields text deltas.
+
+    Fallback contract — a route that fails BEFORE its first delta
+    (bad key, 4xx, quick 5xx, connect timeout) burns its attempt and
+    the next chain entry gets its full shot. Once deltas are flowing,
+    a mid-stream drop is surfaced to the caller (the partial text is
+    usually still worth keeping on screen).
+    """
+    chain = model_chain(task, targeted=targeted)
+    temp = TASK_TEMPERATURES.get(task, 0.7) if temperature is None else temperature
+    default_read = TASK_READ_TIMEOUTS.get(task, 110.0)
+
+    last_error: AIError | None = None
+    for route in chain:
+        read = read_timeout if read_timeout is not None else default_read
+        stream = client.chat_stream(
+            route.provider,
+            route.model,
+            messages,
+            temperature=temp,
+            max_tokens=max_tokens,
+            read_timeout=read,
+            reasoning=reasoning_for(route.model),
+        )
+        try:
+            first = await stream.__anext__()
+        except StopAsyncIteration:
+            return                     # clean empty stream — treat as done
+        except AIError as error:
+            last_error = error
+            continue
+        yield first
+        try:
+            async for piece in stream:
+                yield piece
+            return
+        except AIError:
+            # Mid-stream drop: the partial answer stands; a soft notice
+            # keeps the spoken flow natural rather than erroring out.
+            yield " The connection dipped just there — everything above still stands."
+            return
+
+    raise last_error or AIError(client.WARM_UNREACHABLE, 502)

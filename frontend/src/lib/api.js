@@ -117,6 +117,78 @@ function retriable(err) {
   return err.status === 0 || err.status === 429 || err.status >= 500;
 }
 
+/* ── SSE streaming request (§7.9 Conversation Coach) ────────── */
+
+/**
+ * POST with a JSON body; the reply is a text/event-stream of
+ * `data: {json}` frames. onDelta fires per text delta AS IT ARRIVES
+ * (this is the whole point — feedback starts speaking while the
+ * model is still writing). Resolves with the full accumulated text.
+ * No auto-retry: a stream that already delivered text must not be
+ * restarted from zero.
+ */
+async function streamRequest(path, body, { onDelta, timeoutMs = GEN_TIMEOUT, signal } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onOuterAbort = () => controller.abort();
+  if (signal) signal.addEventListener('abort', onOuterAbort, { once: true });
+
+  const headers = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  headers['Content-Type'] = 'application/json';
+
+  let text = '';
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body ?? {}),
+      signal: controller.signal,
+    });
+    if (!res.ok) await throwApiError(res);
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new ApiError(fallbackMessage(0), 0);
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          let evt;
+          try { evt = JSON.parse(line.slice(5)); } catch { continue; }
+          if (evt.type === 'delta' && evt.text) {
+            text += evt.text;
+            onDelta?.(evt.text, text);
+          } else if (evt.type === 'error') {
+            throw new ApiError(evt.detail || fallbackMessage(res.status), res.status);
+          }
+          // 'done' — nothing to do; the stream closes next
+        }
+      }
+    }
+    return text;
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    if (err?.name === 'AbortError') {
+      if (signal?.aborted) throw err;
+      // Timeout mid-stream: the partial text is still usable by the caller.
+      return text;
+    }
+    throw new ApiError(fallbackMessage(0), 0);
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onOuterAbort);
+  }
+}
+
 async function request(path, opts = {}) {
   const attempts = opts.method === 'GET' ? 3 : 2; // one retry for POSTs, two for GETs
   let lastErr = null;
@@ -221,6 +293,9 @@ export const api = {
     /** §7.6 per-answer feedback — runs after EVERY single answer. */
     feedback: (payload) =>
       request('/speaking/feedback', { method: 'POST', body: payload, timeoutMs: GEN_TIMEOUT }),
+    /** §7.9 live Conversation Coach — streamed feedback (SSE deltas). */
+    coachStream: (payload, handlers = {}) =>
+      streamRequest('/speaking/coach/stream', payload, handlers),
   },
 
   /** §13.1 Kokoro-82M via backend → object URL for <audio>. */

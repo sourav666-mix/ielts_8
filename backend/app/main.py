@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from app.ai.client import AIError
 from app.config import settings
-from app.routers import auth, content, days, history, profile, voice, writing
+from app.routers import auth, content, days, history, profile, speaking, voice, writing
 
 app = FastAPI(
     title=settings.project_name,
@@ -67,6 +67,7 @@ app.include_router(profile.router, prefix=_prefix)
 app.include_router(days.router, prefix=_prefix)
 app.include_router(history.router, prefix=_prefix)
 app.include_router(content.router, prefix=_prefix)
+app.include_router(speaking.router, prefix=_prefix)
 app.include_router(writing.router, prefix=_prefix)
 app.include_router(voice.router, prefix=_prefix)
 

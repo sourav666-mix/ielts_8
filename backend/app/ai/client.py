@@ -217,6 +217,98 @@ async def chat(
     return str(content)
 
 
+# ── Streaming chat completions (SSE, both providers) ──────────
+
+def _status_error(status: int, body: str) -> AIError:
+    """Map a provider HTTP error to the same warm messages the
+    non-streaming path uses (single source of user-facing copy)."""
+    if status == 429:
+        return AIError(WARM_BUSY, 429)
+    if status >= 500:
+        return AIError(WARM_UNREACHABLE, 502)
+    if status in (401, 403):
+        return AIError(
+            "The coach's AI credentials were refused — check the API keys in .env.",
+            502,
+        )
+    if status == 402:
+        return AIError(
+            "The coach's AI account is out of credit — top up the provider "
+            "account and try again.",
+            402,
+        )
+    return AIError(
+        "The AI refused that request — try again; if it keeps happening, "
+        "check the model slugs in .env.",
+        400,
+    )
+
+
+async def chat_stream(
+    provider: str,
+    model: str,
+    messages: list,
+    *,
+    temperature: float = 0.7,
+    max_tokens: int | None = None,
+    read_timeout: float = 110.0,
+    reasoning: dict | None = None,
+):
+    """Yield assistant text deltas from an OpenAI-compatible SSE stream.
+
+    Raises AIError BEFORE the first delta on connection/HTTP failure —
+    that's the contract that lets router.chat_stream_with_fallback try
+    the next model in the chain. After deltas have flowed, a mid-stream
+    drop raises too; the caller decides whether the partial text is
+    still useful.
+    """
+    base, _key, _label = _provider_env(provider)
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": _clamp_temperature(temperature),
+        "stream": True,
+    }
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+    if reasoning and provider == "openrouter":
+        payload["reasoning"] = dict(reasoning)
+
+    timeout = httpx.Timeout(connect=10.0, read=read_timeout, write=60.0, pool=10.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as http:
+            async with http.stream(
+                "POST",
+                f"{base}/chat/completions",
+                headers=_chat_headers(provider),
+                json=payload,
+            ) as resp:
+                if resp.status_code < 200 or resp.status_code >= 300:
+                    raw = (await resp.aread()).decode("utf-8", "replace")[:400]
+                    raise _status_error(resp.status_code, raw)
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        if data == "[DONE]":
+                            break
+                        continue
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        continue
+                    choices = chunk.get("choices") or [{}]
+                    delta = (choices[0] or {}).get("delta") or {}
+                    piece = delta.get("content")
+                    if piece:
+                        yield str(piece)
+    except httpx.TimeoutException:
+        raise AIError(WARM_TIMEOUT, 504)
+    except httpx.TransportError:
+        raise AIError(WARM_UNREACHABLE, 503)
+
+
 # ── Speech-to-text — Groq Whisper (§13.4) ─────────────────────
 
 async def transcribe_audio(
