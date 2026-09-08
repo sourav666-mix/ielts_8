@@ -16,7 +16,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': {
-        target: 'https://ielts-8-eight.vercel.app/',
+        target: 'https://ielts-8.onrender.com',
         changeOrigin: true,
       },
     },
