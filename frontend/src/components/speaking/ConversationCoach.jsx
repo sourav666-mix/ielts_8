@@ -91,6 +91,7 @@ export default function ConversationCoach({ phase, target, initialStage, initial
   const meterStopRef = useRef(null);
   const utteranceRef = useRef(null);
   const permissionAnswerRef = useRef(null);
+  const cantHearRef = useRef(false);
 
   const recRef = useRef(null);
   const handlerRef = useRef(() => {});
@@ -211,17 +212,24 @@ export default function ConversationCoach({ phase, target, initialStage, initial
     await speakOnce(text, getCoachVoice());
   }, []);
 
-  /* ── Question asking: narrate, then hands-free listening. ── */
+  /* ── Question asking: narrate, then hands-free listening. Any open
+   *    recording is closed FIRST so the question TTS never bleeds into
+   *    the answer blob. ── */
   const askQuestion = useCallback(async (index) => {
     const q = questionsRef.current[index];
     if (!q) return;
     setStage('asking');
+    try { recorderRef.current?.stop(); } catch { /* ignore */ }
+    recorderRef.current = null;
     stopAllSpeech();
     await sayLine(q);
     if (stageRef.current !== 'asking') return;   // user ended the session mid-read
     turnRef.current = [];
     setCaptions({ final: '', interim: '' });
     lastSpeechRef.current = 0;
+    hasSpokenRef.current = false;
+    lastActivityRef.current = 0;
+    cantHearRef.current = false;
     turnStartRef.current = Date.now();
     setStage('listening');
     recRef.current?.start?.();
@@ -243,6 +251,10 @@ export default function ConversationCoach({ phase, target, initialStage, initial
           const silentFor = spoken ? now - lastActivityRef.current : 0;
           if (spoken && silentFor >= WHISPER_SILENCE_MS) utteranceRef.current?.('answer');
           else if (spoken && now - turnStartRef.current > MAX_TURN_MS) utteranceRef.current?.('answer');
+          else if (!spoken && now - turnStartRef.current > 12000 && !cantHearRef.current) {
+            cantHearRef.current = true;
+            setMicHint("I can't hear anything — check your microphone, or switch input mode below.");
+          }
         } else {
           const spoken = lastSpeechRef.current > 0;
           const silentFor = spoken ? now - lastSpeechRef.current : 0;
@@ -250,6 +262,10 @@ export default function ConversationCoach({ phase, target, initialStage, initial
           const hasWords = (turnRef.current.join(' ') || captionsRef.current.interim || '').trim();
           if (spoken && silentFor >= SILENCE_END_MS && hasWords) endTurnRef.current?.();
           else if (waited >= MAX_TURN_MS && hasWords) endTurnRef.current?.();
+          else if (!spoken && waited > 12000 && !cantHearRef.current) {
+            cantHearRef.current = true;
+            setMicHint("I can't hear anything — check your microphone, or switch input mode below.");
+          }
         }
       } else if ((s === 'greet' || s === 'permission') && captureWhisperRef.current && !whisperBusyRef.current) {
         if (hasSpokenRef.current && now - lastActivityRef.current >= WHISPER_SILENCE_MS) {
@@ -430,13 +446,14 @@ export default function ConversationCoach({ phase, target, initialStage, initial
     listenKindRef.current = kind;
     hasSpokenRef.current = false;
     lastActivityRef.current = 0;
+    cantHearRef.current = false;
     turnStartRef.current = Date.now();
     await startWhisperRecording();
   }, [startWhisperRecording]);
 
   /* ── Stage changes drive the Whisper listener: recording only ever
    *    runs while the coach is NOT speaking (the greeting is spoken
-   *    first, THEN listening starts). ── */
+   *    first, THEN listening starts), and never bleeds into a question. ── */
   useEffect(() => {
     if (!captureWhisperRef.current) return;
     if (stage === 'greet') {
@@ -447,8 +464,8 @@ export default function ConversationCoach({ phase, target, initialStage, initial
       })();
     } else if (stage === 'listening') { listenKindRef.current = 'answer'; startWhisperTurn('answer'); }
     else if (stage === 'permission') { listenKindRef.current = 'yesno'; startWhisperTurn('yesno'); }
-    else if (stage === 'coach') {
-      // stop any open recording so coach playback is never captured
+    else if (stage === 'asking' || stage === 'coach') {
+      // stop any open recording so coach/question playback is never captured
       try { recorderRef.current?.stop(); } catch { /* ignore */ }
       recorderRef.current = null;
     }
@@ -618,6 +635,13 @@ export default function ConversationCoach({ phase, target, initialStage, initial
   const permissionReadyRef = useRef(false);
   useEffect(() => { if (stage === 'permission') permissionReadyRef.current = true; else permissionReadyRef.current = false; }, [stage]);
 
+  /* ── Greet: speak the introduction aloud in EVERY capture mode
+   *    (the Whisper listener waits for it; webspeech ignores its echo). ── */
+  useEffect(() => {
+    if (stage !== 'greet' || captureWhisperRef.current) return;
+    sayLine(GREETING);
+  }, [stage, sayLine]);   // eslint-disable-line react-hooks/exhaustive-deps
+
   /* ── Route every spoken final transcript by the current stage. ── */
   const handlerDepsRef = useRef({}); handlerDepsRef.current = { handlePermissionAnswer, beginConversation };
   useEffect(() => {
@@ -684,8 +708,9 @@ export default function ConversationCoach({ phase, target, initialStage, initial
   }, [coachText]);
 
   const pushPossible = captureMode !== 'typed';
+  const captureWhisperPossible = captureMode === 'mic' || captureMode === 'recorder';
   const mode = inputMode === 'auto'
-    ? (captureMode === 'mic' ? 'auto' : captureMode === 'recorder' ? 'push' : 'type')
+    ? (captureMode === 'mic' ? 'auto' : captureWhisperPossible ? 'whisper' : captureMode === 'recorder' ? 'push' : 'type')
     : (inputMode === 'push' && !pushPossible ? 'type' : inputMode);
 
   /* ── Render ── */
