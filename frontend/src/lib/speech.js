@@ -296,15 +296,31 @@ export class MicRecognizer {
           interim += r[0].transcript;
         }
       }
+      this._errCount = 0;                       // real audio is flowing again
       this.onInterim?.(interim); // live caption
     };
 
     rec.onerror = (e) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        this._active = false; // mic denied — permanent, surface to the view
-        this.onError?.(e.error);
+      const err = e.error || '';
+      if (err === 'no-speech' || err === 'aborted') return;   // auto-restart handles these
+      if (err === 'not-allowed' || err === 'service-not-allowed') {
+        this._active = false;     // mic denied — permanent, surface to the view
+        this.onError?.(err);
+        return;
       }
-      // 'no-speech' and transient blips: onend's auto-restart handles them
+      if (err === 'audio-capture') {
+        this._active = false;     // no microphone hardware reachable
+        this.onError?.(err);
+        return;
+      }
+      // 'network' (webspeech needs Google's servers) and any repeated
+      // failure: stop the silent restart loop and tell the view, so it
+      // can offer push-to-talk / typed input instead of a dead mic.
+      this._errCount = (this._errCount || 0) + 1;
+      if (err === 'network' || this._errCount >= 4) {
+        this._active = false;
+        this.onError?.('mic-failed');
+      }
     };
 
     rec.onend = () => {

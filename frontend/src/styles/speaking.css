@@ -494,3 +494,6 @@
 .coach-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .coach-start { justify-self: start; }
 .coach-hint { border-left: 3px solid #e5a13d; }
+.coach-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.coach-chips .chip { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border, #8891a5); background: transparent; cursor: pointer; font-size: 13px; }
+.coach-chips .chip-on { border-color: var(--accent, #6c8cff); background: rgba(108, 140, 255, 0.14); font-weight: 600; }

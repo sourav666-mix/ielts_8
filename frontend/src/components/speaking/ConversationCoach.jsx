@@ -47,7 +47,7 @@ import '../../styles/speaking.css';
 const SILENCE_END_MS = 2200;      // speech → silence gap that ends a turn
 const MAX_TURN_MS = 90_000;       // hard cap on one answer
 
-export default function ConversationCoach({ phase, target, initialStage }) {
+export default function ConversationCoach({ phase, target, initialStage, initialInputMode }) {
   const [stage, setStage] = useState(initialStage || 'boot');   // boot|greet|asking|listening|coach|permission|loading|summary
   const stageRef = useRef('boot'); stageRef.current = stage;
   const [round, setRound] = useState(null);
@@ -61,6 +61,9 @@ export default function ConversationCoach({ phase, target, initialStage }) {
   const [lastBand, setLastBand] = useState(null);
   const [answered, setAnswered] = useState(0);
   const [permissionRetry, setPermissionRetry] = useState(0);
+  // 'auto' = live mic (webspeech) · 'push' = record→Whisper button · 'type'
+  const [inputMode, setInputMode] = useState(initialInputMode || 'auto');
+  const [recording, setRecording] = useState(false);
 
   const captureMode = useMemo(() => pickCaptureMode(), []);
   const micSupported = captureMode !== 'typed';
@@ -158,9 +161,17 @@ export default function ConversationCoach({ phase, target, initialStage }) {
           setCaptions((c) => ({ ...c, interim: t }));
         }
       },
-      onError: (e) => setMicHint(e === 'not-allowed'
-        ? 'Microphone blocked — allow it in the browser, or switch to typing below.'
-        : ''),
+      onError: (e) => {
+        const map = {
+          'not-allowed': 'Microphone blocked — allow it in the browser, or switch to Push-to-talk or Type below.',
+          'service-not-allowed': 'Microphone blocked — allow it in the browser, or switch to Push-to-talk or Type below.',
+          'audio-capture': 'No microphone was found — switch to Push-to-talk (if a mic exists) or Type.',
+          'mic-failed': 'The live mic isn\u2019t responding — switched to Push-to-talk. You can also type.',
+        };
+        setMicHint(map[e] || '');
+        // Live mic dead → don't strand the student: fall back to Whisper.
+        if (e === 'mic-failed' || e === 'audio-capture') setInputMode('push');
+      },
     });
     recRef.current = rec;
     rec.start();                          // live from the greeting onward
@@ -304,6 +315,38 @@ export default function ConversationCoach({ phase, target, initialStage }) {
     setPermissionRetry(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, target]);
+
+  /* ── Push-to-talk (RecorderTranscriber → Whisper): the reliable
+   *    fallback when the live mic (webspeech) can't run. ── */
+  const startPush = useCallback(async () => {
+    if (!recTransRef.current) recTransRef.current = new RecorderTranscriber();
+    try {
+      await recTransRef.current.start();
+      setRecording(true);
+      turnStartRef.current = Date.now();
+      setMicHint('');
+    } catch {
+      setRecording(false);
+      setMicHint("Couldn't access the microphone — check browser permissions, or Type your answer.");
+    }
+  }, []);
+
+  const stopPush = useCallback(async () => {
+    if (!recTransRef.current || !recording) return;
+    setRecording(false);
+    setStage('coach');
+    let text = '';
+    try { text = await recTransRef.current.stop(); } catch { text = ''; }
+    const answer = (text || '').trim();
+    if (!answer) {
+      setStage('listening');
+      setMicHint('Nothing was captured — try Push-to-talk again, or switch to Type.');
+      return;
+    }
+    const q = questionsRef.current[qIndexRef.current];
+    browserSpeak(ackLine(), { voiceHint: getCoachVoice() });
+    await runCoachTurn(q, answer);
+  }, [recording, runCoachTurn, sayLine]);
 
   /* ── End of a listening turn → the coach takes over. ── */
   const endTurn = useCallback(async () => {
@@ -458,7 +501,10 @@ export default function ConversationCoach({ phase, target, initialStage }) {
     };
   }, [coachText]);
 
-  const showTyped = !micSupported || captureMode === 'recorder' || stage === 'listening';
+  const pushPossible = captureMode !== 'typed';
+  const mode = inputMode === 'auto'
+    ? (captureMode === 'mic' ? 'auto' : captureMode === 'recorder' ? 'push' : 'type')
+    : (inputMode === 'push' && !pushPossible ? 'type' : inputMode);
 
   /* ── Render ── */
   if (stage === 'boot') {
@@ -557,27 +603,62 @@ export default function ConversationCoach({ phase, target, initialStage }) {
           {stage === 'asking' && <p className="muted">The coach is asking — your mic opens when it finishes.</p>}
           {stage === 'listening' && (
             <>
-              <div className={cn('coach-mic', captions.interim || captions.final ? 'live' : '')}>
-                <span className="coach-mic-dot" />
-                {captions.interim || captions.final
-                  ? <span>{captions.final} <em className="coach-interim">{captions.interim}</em></span>
-                  : <span className="muted">Listening… just answer naturally; I'll know when you're done.</span>}
-              </div>
-              {captureMode === 'recorder' && (
-                <button type="button" className="btn btn-primary" onClick={() => endTurnRef.current?.()}>
-                  I'm done
+              {/* Input-mode chips — the student is never locked into a broken mic */}
+              <div className="coach-chips">
+                {captureMode === 'mic' && (
+                  <button type="button" className={cn('chip', mode === 'auto' && 'chip-on')} onClick={() => setInputMode('auto')}>
+                    Live mic
+                  </button>
+                )}
+                {pushPossible && (
+                  <button type="button" className={cn('chip', mode === 'push' && 'chip-on')} onClick={() => { setInputMode('push'); setRecording(false); }}>
+                    Push-to-talk
+                  </button>
+                )}
+                <button type="button" className={cn('chip', mode === 'type' && 'chip-on')} onClick={() => setInputMode('type')}>
+                  Type
                 </button>
+              </div>
+
+              {mode === 'auto' && (
+                <>
+                  <div className={cn('coach-mic', captions.interim || captions.final ? 'live' : '')}>
+                    <span className="coach-mic-dot" />
+                    {captions.interim || captions.final
+                      ? <span>{captions.final} <em className="coach-interim">{captions.interim}</em></span>
+                      : <span className="muted">Listening… just answer naturally; I'll know when you're done.</span>}
+                  </div>
+                  <button type="button" className="btn" onClick={() => endTurnRef.current?.()}>
+                    I'm done
+                  </button>
+                </>
               )}
-              {showTyped && (
+
+              {mode === 'push' && (
+                <>
+                  <div className={cn('coach-mic', recording ? 'live' : '')}>
+                    <span className={cn('coach-mic-dot', recording && 'live')} />
+                    {recording
+                      ? <span>Recording… speak your answer, then press done.</span>
+                      : <span className="muted">Press start, answer out loud, then press done — it's transcribed and coached.</span>}
+                  </div>
+                  {recording
+                    ? <button type="button" className="btn btn-primary" onClick={stopPush}>I'm done</button>
+                    : <button type="button" className="btn btn-primary" onClick={startPush}>Start speaking</button>}
+                </>
+              )}
+
+              {mode === 'type' && (
                 <div className="coach-typed">
                   <input
                     type="text"
                     value={typed}
-                    placeholder="…or type your answer"
+                    placeholder="Type your answer"
                     onChange={(e) => setTyped(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') submitTyped(); }}
+                    autoFocus
                   />
-                  <button type="button" className="btn" onClick={submitTyped}>Send</button>
+                  <button type="button" className="btn btn-primary" onClick={submitTyped}>Send</button>
                 </div>
               )}
             </>

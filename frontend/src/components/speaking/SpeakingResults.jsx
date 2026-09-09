@@ -76,9 +76,18 @@ export default function SpeakingResults({ phase, target }) {
         ))}
       </section>
 
-      <Link to="/" className="btn btn-primary" style={{ alignSelf: 'flex-start' }}>
-        Back to the dashboard
-      </Link>
+      <div className="coach-actions" style={{ marginTop: 16 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => { useDayStore.getState().resetModule('speaking'); }}
+        >
+          Practice again
+        </button>
+        <Link to="/" className="btn btn-ghost">
+          Back to the dashboard
+        </Link>
+      </div>
     </div>
   );
 }
