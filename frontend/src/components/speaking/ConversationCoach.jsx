@@ -47,8 +47,8 @@ import '../../styles/speaking.css';
 const SILENCE_END_MS = 2200;      // speech → silence gap that ends a turn
 const MAX_TURN_MS = 90_000;       // hard cap on one answer
 
-export default function ConversationCoach({ phase, target }) {
-  const [stage, setStage] = useState('boot');   // boot|greet|asking|listening|coach|permission|loading|summary
+export default function ConversationCoach({ phase, target, initialStage }) {
+  const [stage, setStage] = useState(initialStage || 'boot');   // boot|greet|asking|listening|coach|permission|loading|summary
   const stageRef = useRef('boot'); stageRef.current = stage;
   const [round, setRound] = useState(null);
   const [genError, setGenError] = useState(null);
@@ -63,6 +63,7 @@ export default function ConversationCoach({ phase, target }) {
   const [permissionRetry, setPermissionRetry] = useState(0);
 
   const captureMode = useMemo(() => pickCaptureMode(), []);
+  const micSupported = captureMode !== 'typed';
 
   const recRef = useRef(null);
   const handlerRef = useRef(() => {});
