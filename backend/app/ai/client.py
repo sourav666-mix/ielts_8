@@ -309,6 +309,93 @@ async def chat_stream(
         raise AIError(WARM_UNREACHABLE, 503)
 
 
+# ── Natural TTS — OpenRouter audio-out (openai/gpt-audio-mini) ──
+
+def _pcm16_to_wav(pcm: bytes, sample_rate: int = 24000, channels: int = 1) -> bytes:
+    """Wrap raw pcm16 mono bytes in a WAV container the browser can play."""
+    import io
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+def gpt_audio_voice(kokoro_voice: str | None) -> str:
+    """Map the student's Kokoro coach voice to the closest gpt-audio one
+    (gender + vibe preserved roughly across engines)."""
+    v = (kokoro_voice or "").lower()
+    if v.startswith("bf_"):
+        return "nova"       # British female → warm expressive female
+    if v.startswith("bm_"):
+        return "fable"      # British male → expressive storyteller male
+    if v.startswith("am_"):
+        return "echo"       # American male
+    return "shimmer"        # American female default (af_heart etc.)
+
+
+async def synthesize_speech_gpt_audio(text: str, voice: str = "alloy", *, read_timeout: float = 60.0) -> bytes:
+    """Natural speech via openai/gpt-audio-mini (OpenRouter audio-out).
+
+    The provider ONLY supports audio output with stream:true + pcm16
+    format, so this consumes the SSE stream, reassembles the base64
+    pcm16 deltas and wraps them in a WAV container. Raises AIError on
+    any failure so callers can fall back to Kokoro unchanged.
+    """
+    payload: dict[str, Any] = {
+        "model": settings.gpt_audio_model,
+        "modalities": ["text", "audio"],
+        "audio": {"voice": gpt_audio_voice(voice), "format": "pcm16"},
+        "stream": True,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Read the user's text aloud exactly as written — natural, warm, at a relaxed conversational pace. Do not add or omit anything.",
+            },
+            {"role": "user", "content": text},
+        ],
+    }
+    timeout = httpx.Timeout(connect=10.0, read=read_timeout, write=60.0, pool=10.0)
+    b64 = bytearray()
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as http:
+            async with http.stream(
+                "POST",
+                f"{settings.openrouter_base_url}/chat/completions",
+                headers=_chat_headers("openrouter"),
+                json=payload,
+            ) as resp:
+                if resp.status_code < 200 or resp.status_code >= 300:
+                    raw = (await resp.aread()).decode("utf-8", "replace")[:300]
+                    raise _status_error(resp.status_code, raw)
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        if data == "[DONE]":
+                            break
+                        continue
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        continue
+                    delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
+                    piece = (delta.get("audio") or {}).get("data")
+                    if piece:
+                        b64 += piece.encode("ascii")
+    except httpx.TimeoutException:
+        raise AIError(WARM_TIMEOUT, 504)
+    except httpx.TransportError:
+        raise AIError(WARM_UNREACHABLE, 503)
+    if not b64:
+        raise AIError(WARM_EMPTY, 502)
+    return _pcm16_to_wav(base64.b64decode(bytes(b64)))
+
+
 # ── Speech-to-text — Groq Whisper (§13.4) ─────────────────────
 
 async def transcribe_audio(

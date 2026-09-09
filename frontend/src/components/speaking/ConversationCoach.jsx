@@ -104,6 +104,7 @@ export default function ConversationCoach({ phase, target, initialStage, initial
   const bankedRef = useRef(0);
   const qIndexRef = useRef(0); qIndexRef.current = qIndex;
   const questionsRef = useRef([]);
+  const historyRef = useRef([]);             // recent turns → coach callbacks
   const hasBegunRef = useRef(false);
 
   const questions = useMemo(() => {
@@ -306,6 +307,7 @@ export default function ConversationCoach({ phase, target, initialStage, initial
         question, answer, phase,
         topic: roundRef.current?.topic || '',
         targetBand: target,
+        history: historyRef.current.slice(-4),   // recent turns → natural callbacks
       }, {
         onDelta: (delta, full) => {
           setCoachText(full);
@@ -351,6 +353,10 @@ export default function ConversationCoach({ phase, target, initialStage, initial
       setRound(updated);
       useDayStore.getState().upsertSpeakingRound(updated);
       setAnswered((n) => n + 1);
+      historyRef.current = [
+        ...historyRef.current,
+        { question, answer: String(answer).slice(0, 200) },
+      ];
     }
     setStage('permission');
     setPermissionRetry(0);

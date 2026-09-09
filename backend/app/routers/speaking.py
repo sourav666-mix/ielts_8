@@ -41,7 +41,7 @@ async def speaking_coach_stream(
     async def frames():
         try:
             async for delta in chat_stream_with_fallback(
-                Task.SPEAKING_FEEDBACK, messages, max_tokens=700,
+                Task.SPEAKING_FEEDBACK, messages, max_tokens=700, temperature=0.7,
             ):
                 yield f"data: {json.dumps({'type': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"

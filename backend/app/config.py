@@ -84,8 +84,9 @@ class Settings(BaseSettings):
     model_speaking_feedback: str = "openai/gpt-5.6-luna"
     model_fallback: str = "google/gemini-3.6-flash"
 
-    # ── Voice (spec §13 — Kokoro-82M only, one provider) ──────
+    # ── Voice (spec §13 — Kokoro + gpt-audio natural TTS) ─────
     tts_model: str = "hexgrad/kokoro-82m"
+    gpt_audio_model: str = "openai/gpt-audio-mini"   # natural streamed TTS
     tts_coach_voice: str = "af_heart"           # §13.5 — the coach's fixed identity
     stt_model: str = "whisper-large-v3-turbo"   # §13.4 — Groq
 

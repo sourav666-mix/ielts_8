@@ -13,7 +13,7 @@ import re
 from fastapi import APIRouter, Body, Depends, File, UploadFile
 from fastapi.responses import Response
 
-from app.ai.client import AIError, synthesize_speech, transcribe_audio
+from app.ai.client import AIError, synthesize_speech, synthesize_speech_gpt_audio, transcribe_audio
 from app.deps import get_current_user
 from app.store import User
 
@@ -46,6 +46,16 @@ async def tts(
         text = text[:MAX_TTS_CHARS]
     if not _VOICE_RE.match(voice):
         raise AIError("That voice isn't available — reload the page and try again.", 400)
+
+    # Preferred engine: openai/gpt-audio-mini via OpenRouter — a far more
+    # natural voice than Kokoro, streamed pcm16 → WAV (verified live:
+    # first audio ~1.1s). ANY failure falls back to Kokoro silently:
+    # a TTS outage never blocks a module (§13.5).
+    try:
+        wav = await synthesize_speech_gpt_audio(text, voice, read_timeout=45)
+        return Response(content=wav, media_type="audio/wav")
+    except AIError:
+        pass
 
     audio = await synthesize_speech(text, voice, speed=speed)
     return Response(content=audio, media_type="audio/mpeg")

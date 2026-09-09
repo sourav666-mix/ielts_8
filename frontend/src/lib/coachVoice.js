@@ -115,11 +115,15 @@ export class CoachSpeaker {
       const sentence = this.queue.shift();
       const key = `${this.voice}::${sentence}`;
 
-      // PIPELINE: start synthesizing the NEXT sentence while this one plays.
+      // PIPELINE: start synthesizing the NEXT TWO sentences while this
+      // one plays — synthesis (~1.5-2s) hides completely behind playback.
       const audioPromise = this._audioFor(sentence, key).catch(() => null);
       const nextPromise = this.queue.length
         ? this._audioFor(this.queue[0], `${this.voice}::${this.queue[0]}`).catch(() => null)
         : null;
+      if (this.queue.length > 1) {
+        void this._audioFor(this.queue[1], `${this.voice}::${this.queue[1]}`).catch(() => null);
+      }
 
       this.playing = true;
       try {

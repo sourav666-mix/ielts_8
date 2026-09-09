@@ -606,10 +606,23 @@ Rules that never bend: quotes stay straight quotes so the display can pair them;
 
 
 def speaking_coach_messages(payload: dict) -> list[dict]:
+    history = [h for h in (_g(payload, "history") or []) if isinstance(h, dict)]
+    history_block = ""
+    if history:
+        lines = "\n".join(
+            f"Q: {str(h.get('question', ''))[:120]} — A: {str(h.get('answer', ''))[:140]}"
+            for h in history[-4:]
+        )
+        history_block = (
+            "\nRECENT CONVERSATION (oldest first) — you may briefly reference what "
+            "the student said earlier, the way a real examiner would:\n"
+            f"{lines}\n"
+        )
     user = (
         f"Programme phase: {_g(payload, 'phase', 'practice')}. "
         f"Topic of this conversation: “{_g(payload, 'topic', 'getting to know you')}”. "
-        f"Student target band: {_g(payload, 'targetBand', 6.5)}.\n\n"
+        f"Student target band: {_g(payload, 'targetBand', 6.5)}.\n"
+        f"{history_block}\n"
         f"THE QUESTION THE STUDENT JUST ANSWERED: {_g(payload, 'question', '')}\n\n"
         "THE STUDENT'S SPOKEN ANSWER (raw transcript):\n"
         f"\"\"\"\n{_g(payload, 'answer', '')}\n\"\"\"\n\n"
