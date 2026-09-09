@@ -30,6 +30,7 @@ import { Stopwatch } from '../../lib/timers.js';
 import {
   MicRecognizer, RecorderTranscriber, pickCaptureMode,
   stopAllSpeech, speakOnce, getCoachVoice, ackLine, browserSpeak,
+  isCoachSpeaking, createLevelMeter,
 } from '../../lib/speech.js';
 import { CoachSpeaker } from '../../lib/coachVoice.js';
 import { coachToFeedback, parseCoachSections, stripMarkers, detectYesNo } from '../../lib/coachParser.js';
@@ -44,8 +45,13 @@ import VoicePicker from './VoicePicker.jsx';
 import { ErrorState, LoadingHero } from '../ui.jsx';
 import '../../styles/speaking.css';
 
-const SILENCE_END_MS = 2200;      // speech → silence gap that ends a turn
+const SILENCE_END_MS = 2200;      // speech → silence gap that ends a turn (webspeech)
+const WHISPER_SILENCE_MS = 1900;  // same, for the local-recording (Whisper) path
 const MAX_TURN_MS = 90_000;       // hard cap on one answer
+
+const GREETING = "Hi! I'm your speaking coach. We'll just chat — you answer my questions out loud, and after every answer I'll fix your grammar and show you a better way to say it. Say start whenever you're ready, or tap the button.";
+
+const extFor = (mime) => (mime && mime.includes('mp4') ? 'm4a' : 'webm');
 
 export default function ConversationCoach({ phase, target, initialStage, initialInputMode }) {
   const [stage, setStage] = useState(initialStage || 'boot');   // boot|greet|asking|listening|coach|permission|loading|summary
@@ -67,6 +73,24 @@ export default function ConversationCoach({ phase, target, initialStage, initial
 
   const captureMode = useMemo(() => pickCaptureMode(), []);
   const micSupported = captureMode !== 'typed';
+
+  // ── Hands-free capture paths ──
+  // 'auto'  → webspeech live mic when the browser supports it, else Whisper
+  // 'whisper' → forced local recording + silence detection (no Google
+  //             servers) — works anywhere a microphone works
+  // 'push'  → manual record button · 'type' → typed
+  const webspeechOk = captureMode === 'mic';
+  const captureWhisper = inputMode === 'whisper' || (inputMode === 'auto' && !webspeechOk);
+  const captureWhisperRef = useRef(false); captureWhisperRef.current = captureWhisper;
+  const whisperBusyRef = useRef(false);
+  const hasSpokenRef = useRef(false);
+  const listenKindRef = useRef('answer');   // 'start' | 'answer' | 'yesno'
+  const streamRef = useRef(null);           // persistent MediaStream
+  const recorderRef = useRef(null);         // active MediaRecorder
+  const chunksRef = useRef([]);
+  const meterStopRef = useRef(null);
+  const utteranceRef = useRef(null);
+  const permissionAnswerRef = useRef(null);
 
   const recRef = useRef(null);
   const handlerRef = useRef(() => {});
@@ -163,14 +187,15 @@ export default function ConversationCoach({ phase, target, initialStage, initial
       },
       onError: (e) => {
         const map = {
-          'not-allowed': 'Microphone blocked — allow it in the browser, or switch to Push-to-talk or Type below.',
-          'service-not-allowed': 'Microphone blocked — allow it in the browser, or switch to Push-to-talk or Type below.',
-          'audio-capture': 'No microphone was found — switch to Push-to-talk (if a mic exists) or Type.',
+          'not-allowed': 'Microphone blocked — allow it in the browser, or switch to Voice (Whisper) or Type below.',
+          'service-not-allowed': 'Microphone blocked — allow it in the browser, or switch to Voice (Whisper) or Type below.',
+          'audio-capture': 'No microphone was found — switch to Type.',
           'mic-failed': 'The live mic isn\u2019t responding — switched to Push-to-talk. You can also type.',
         };
         setMicHint(map[e] || '');
-        // Live mic dead → don't strand the student: fall back to Whisper.
-        if (e === 'mic-failed' || e === 'audio-capture') setInputMode('push');
+        // Live mic dead → fall back to the HANDS-FREE Whisper listener
+        // (the conversation keeps flowing with zero button presses).
+        if (e === 'mic-failed' || e === 'audio-capture') setInputMode('whisper');
       },
     });
     recRef.current = rec;
@@ -202,18 +227,34 @@ export default function ConversationCoach({ phase, target, initialStage, initial
     if (captureMode === 'recorder') recTransRef.current?.start?.();
   }, [captureMode, sayLine]);
 
-  /* ── End-of-turn watcher: silence after speech submits; a hard
-   *    cap protects against runaway silence. ── */
+  /* ── Unified turn watcher: ends listening turns on silence for BOTH
+   *    capture paths, and listens for start / yes-no in greet and
+   *    permission stages when the hands-free Whisper path is active. ── */
   const endTurnRef = useRef(null);
   useEffect(() => {
     const iv = setInterval(() => {
-      if (stageRef.current !== 'listening') return;
-      const spoken = lastSpeechRef.current > 0;
-      const silentFor = spoken ? Date.now() - lastSpeechRef.current : 0;
-      const waited = Date.now() - turnStartRef.current;
-      const hasWords = (turnRef.current.join(' ') || captionsRef.current.interim || '').trim();
-      if (spoken && silentFor >= SILENCE_END_MS && hasWords) endTurnRef.current?.();
-      else if (waited >= MAX_TURN_MS && hasWords) endTurnRef.current?.();
+      const s = stageRef.current;
+      const now = Date.now();
+      if (s === 'listening') {
+        if (captureWhisperRef.current) {
+          if (whisperBusyRef.current) return;
+          const spoken = hasSpokenRef.current;
+          const silentFor = spoken ? now - lastActivityRef.current : 0;
+          if (spoken && silentFor >= WHISPER_SILENCE_MS) utteranceRef.current?.('answer');
+          else if (spoken && now - turnStartRef.current > MAX_TURN_MS) utteranceRef.current?.('answer');
+        } else {
+          const spoken = lastSpeechRef.current > 0;
+          const silentFor = spoken ? now - lastSpeechRef.current : 0;
+          const waited = now - turnStartRef.current;
+          const hasWords = (turnRef.current.join(' ') || captionsRef.current.interim || '').trim();
+          if (spoken && silentFor >= SILENCE_END_MS && hasWords) endTurnRef.current?.();
+          else if (waited >= MAX_TURN_MS && hasWords) endTurnRef.current?.();
+        }
+      } else if ((s === 'greet' || s === 'permission') && captureWhisperRef.current && !whisperBusyRef.current) {
+        if (hasSpokenRef.current && now - lastActivityRef.current >= WHISPER_SILENCE_MS) {
+          utteranceRef.current?.(s === 'greet' ? 'start' : 'yesno');
+        }
+      }
     }, 250);
     return () => clearInterval(iv);
   }, []);
@@ -315,6 +356,98 @@ export default function ConversationCoach({ phase, target, initialStage, initial
     setPermissionRetry(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, target]);
+
+  /* ── Hands-free Whisper listening (§7.9): record continuously, watch
+   *    the voice-energy meter, and when speech stops → Whisper STT →
+   *    route the transcript. NO button presses anywhere in the loop. ── */
+
+  const ensureMicStream = useCallback(async () => {
+    if (streamRef.current) return streamRef.current;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      // Voice-energy meter: activity is IGNORED while the coach is
+      // speaking so its own TTS never triggers a "turn".
+      meterStopRef.current = createLevelMeter(stream, () => {
+        if (isCoachSpeaking() || speakerRef.current?.playing) return;
+        lastActivityRef.current = Date.now();
+        hasSpokenRef.current = true;
+      });
+      return stream;
+    } catch {
+      setMicHint("Couldn't access the microphone — check browser permissions, or Type your answer.");
+      return null;
+    }
+  }, []);
+
+  const startWhisperRecording = useCallback(async () => {
+    if (recorderRef.current) return;                    // already recording
+    const stream = await ensureMicStream();
+    if (!stream) return;
+    if (typeof window.MediaRecorder !== 'function') {
+      setMicHint('This browser can\u2019t record audio — Type your answers instead.');
+      return;
+    }
+    try {
+      const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+        .find((m) => MediaRecorder.isTypeSupported(m)) || '';
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) chunksRef.current.push(e.data); };
+      rec.start(400);
+      recorderRef.current = rec;
+    } catch {
+      setMicHint('Recording failed to start — switch to Push-to-talk or Type.');
+    }
+  }, [ensureMicStream]);
+
+  const stopWhisperAndTranscribe = useCallback(async () => {
+    const rec = recorderRef.current;
+    if (!rec) return '';
+    recorderRef.current = null;
+    const blob = await new Promise((resolve) => {
+      rec.onstop = () => resolve(new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' }));
+      try { rec.stop(); } catch { resolve(new Blob(chunksRef.current)); }
+    });
+    if (!blob.size) return '';
+    try {
+      const { text } = await api.stt(blob, `answer.${extFor(rec.mimeType)}`);
+      return (text || '').trim();                      // RAW — fillers preserved (§13.4)
+    } catch {
+      setMicHint('The transcription service hiccupped — try again.');
+      return '';
+    }
+  }, []);
+
+  /** Begin (or restart) a hands-free listening turn of the given kind. */
+  const startWhisperTurn = useCallback(async (kind) => {
+    listenKindRef.current = kind;
+    hasSpokenRef.current = false;
+    lastActivityRef.current = 0;
+    turnStartRef.current = Date.now();
+    await startWhisperRecording();
+  }, [startWhisperRecording]);
+
+  /* ── Stage changes drive the Whisper listener: recording only ever
+   *    runs while the coach is NOT speaking (the greeting is spoken
+   *    first, THEN listening starts). ── */
+  useEffect(() => {
+    if (!captureWhisperRef.current) return;
+    if (stage === 'greet') {
+      listenKindRef.current = 'start';
+      (async () => {
+        await sayLine(GREETING);
+        if (stageRef.current === 'greet') startWhisperTurn('start');
+      })();
+    } else if (stage === 'listening') { listenKindRef.current = 'answer'; startWhisperTurn('answer'); }
+    else if (stage === 'permission') { listenKindRef.current = 'yesno'; startWhisperTurn('yesno'); }
+    else if (stage === 'coach') {
+      // stop any open recording so coach playback is never captured
+      try { recorderRef.current?.stop(); } catch { /* ignore */ }
+      recorderRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, captureWhisper]);
 
   /* ── Push-to-talk (RecorderTranscriber → Whisper): the reliable
    *    fallback when the live mic (webspeech) can't run. ── */
@@ -420,6 +553,43 @@ export default function ConversationCoach({ phase, target, initialStage, initial
     askQuestion(0);
   }, [askQuestion]);
 
+  /** A silence-delimited utterance just ended → transcribe → route by kind. */
+  const handleUtterance = useCallback(async (kind) => {
+    if (whisperBusyRef.current) return;
+    whisperBusyRef.current = true;
+    const transcript = await stopWhisperAndTranscribe();
+    hasSpokenRef.current = false;
+    lastActivityRef.current = 0;
+
+    if (kind === 'answer') {
+      if (!transcript) {
+        whisperBusyRef.current = false;
+        startWhisperTurn('answer');              // nothing said — listen again
+        return;
+      }
+      const q = questionsRef.current[qIndexRef.current];
+      browserSpeak(ackLine(), { voiceHint: getCoachVoice() });
+      await runCoachTurn(q, transcript);
+      whisperBusyRef.current = false;
+      return;
+    }
+
+    whisperBusyRef.current = false;
+    if (kind === 'start') {
+      if (detectYesNo(transcript) === 'yes' || /\b(start|begin)\b/.test(transcript)) beginConversation();
+      else startWhisperTurn('start');
+      return;
+    }
+    // 'yesno'
+    const choice = detectYesNo(transcript);
+    if (choice === 'yes' || choice === 'no') permissionAnswerRef.current?.(choice);
+    else {
+      sayLine('Sorry — was that a yes or a no?');
+      startWhisperTurn('yesno');
+    }
+  }, [stopWhisperAndTranscribe, startWhisperTurn, runCoachTurn, beginConversation, sayLine]);
+  utteranceRef.current = handleUtterance;
+
   /* ── Permission gate: voice yes/no with button + typed fallbacks. ── */
   const permissionNext = useCallback(() => {
     const nextIndex = qIndexRef.current + 1;
@@ -437,6 +607,7 @@ export default function ConversationCoach({ phase, target, initialStage, initial
     if (choice === 'yes') permissionNext();
     else finishConversation();
   }, [permissionNext, finishConversation]);
+  permissionAnswerRef.current = handlePermissionAnswer;
 
   const permissionReadyRef = useRef(false);
   useEffect(() => { if (stage === 'permission') permissionReadyRef.current = true; else permissionReadyRef.current = false; }, [stage]);
@@ -447,6 +618,11 @@ export default function ConversationCoach({ phase, target, initialStage, initial
     handlerRef.current = (text) => {
       const t = String(text || '').trim();
       if (!t) return;
+      // Never listen to the coach's own voice (its TTS contains words
+      // like "start" that would falsely trigger the greeting gate).
+      if (isCoachSpeaking() || speakerRef.current?.playing) return;
+      // Hands-free Whisper mode handles speech through its own path.
+      if (captureWhisperRef.current) return;
       const s = stageRef.current;
       if (s === 'greet') {
         if (detectYesNo(t) === 'yes' || /\b(start|begin)\b/.test(t)) handlerDepsRef.current.beginConversation();
@@ -611,6 +787,11 @@ export default function ConversationCoach({ phase, target, initialStage, initial
                   </button>
                 )}
                 {pushPossible && (
+                  <button type="button" className={cn('chip', mode === 'whisper' && 'chip-on')} onClick={() => setInputMode('whisper')}>
+                    Voice (Whisper)
+                  </button>
+                )}
+                {pushPossible && (
                   <button type="button" className={cn('chip', mode === 'push' && 'chip-on')} onClick={() => { setInputMode('push'); setRecording(false); }}>
                     Push-to-talk
                   </button>
@@ -619,6 +800,13 @@ export default function ConversationCoach({ phase, target, initialStage, initial
                   Type
                 </button>
               </div>
+
+              {mode === 'whisper' && (
+                <div className="coach-mic live">
+                  <span className="coach-mic-dot live" />
+                  <span>Voice mode — just answer out loud. I hear you automatically and keep the conversation going, no buttons.</span>
+                </div>
+              )}
 
               {mode === 'auto' && (
                 <>
