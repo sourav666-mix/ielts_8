@@ -54,24 +54,31 @@ export class LiveMic {
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       ctx = new AC();
+      // ⚠ Autoplay policy: a context created off a gesture chain can be
+      // born SUSPENDED — a suspended context produces no audio data and
+      // the mic would look permanently dead. Resume it, and keep trying.
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
       const src = ctx.createMediaStreamSource(this.stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
       src.connect(analyser);
       const buf = new Uint8Array(analyser.fftSize);
       const tick = () => {
-        analyser.getByteTimeDomainData(buf);
-        let peak = 0;
-        for (let i = 0; i < buf.length; i++) {
-          const v = Math.abs(buf[i] - 128);
-          if (v > peak) peak = v;
+        if (ctx.state === 'suspended') { ctx.resume().catch(() => {}); }
+        else {
+          analyser.getByteTimeDomainData(buf);
+          let peak = 0;
+          for (let i = 0; i < buf.length; i++) {
+            const v = Math.abs(buf[i] - 128);
+            if (v > peak) peak = v;
+          }
+          // speaking gate: the coach's own TTS must never count as the user
+          if (peak > 6 && !this.coachSpeaking) {
+            this.hasSpoken = true;
+            this.lastActivity = Date.now();
+          }
+          if (this.onLevel) this.onLevel(Math.min(1, peak / 60));
         }
-        // speaking gate: the coach's own TTS must never count as the user
-        if (peak > 6 && !this.coachSpeaking) {
-          this.hasSpoken = true;
-          this.lastActivity = Date.now();
-        }
-        if (this.onLevel) this.onLevel(Math.min(1, peak / 60));
         raf = requestAnimationFrame(tick);
       };
       tick();
@@ -105,7 +112,8 @@ export class LiveMic {
     }
   }
 
-  /** Stop and transcribe the utterance → RAW text ('' if nothing). */
+  /** Stop and transcribe the utterance → RAW text ('' if nothing).
+   *  One automatic retry: a single hiccup must not lose the answer. */
   async endUtterance() {
     const rec = this.recorder;
     this.recorder = null;
@@ -117,12 +125,15 @@ export class LiveMic {
     });
     this.hasSpoken = false;
     if (!blob.size) return '';
-    try {
-      const { text } = await api.stt(blob, `answer.${extFor(rec.mimeType)}`);
-      return (text || '').trim();               // RAW — fillers preserved (§13.4)
-    } catch {
-      return '';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { text } = await api.stt(blob, `answer.${extFor(rec.mimeType)}`);
+        if ((text || '').trim()) return text.trim();   // RAW — fillers preserved (§13.4)
+      } catch {
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 700));
+      }
     }
+    return '';
   }
 
   close() {

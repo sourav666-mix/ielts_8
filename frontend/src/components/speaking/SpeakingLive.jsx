@@ -16,6 +16,7 @@
    ============================================================ */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useDayStore, newRound } from '../../store/useDayStore.js';
 import { useProfileStore, weakAreaSummary } from '../../store/useProfileStore.js';
 import { useHistoryStore } from '../../store/useHistoryStore.js';
@@ -40,8 +41,9 @@ const HEAR_HINT_MS = 12_000;      // "I can't hear you" nudge
 
 const GREETING = "Hi! I'm your speaking coach. We'll just have a conversation — you answer out loud, and after every answer I'll fix your grammar and show you a better way to say it. Let's begin.";
 
-export default function SpeakingLive({ phase, target }) {
-  const [stage, setStage] = useState('ready');  // ready|boot|speaking|listening|thinking|gate|summary
+export default function SpeakingLive({ phase, target, initialStage }) {
+  const navigate = useNavigate();
+  const [stage, setStage] = useState(initialStage || 'ready');  // ready|boot|speaking|listening|thinking|gate|summary
   const stageRef = useRef('ready'); stageRef.current = stage;
   const [round, setRound] = useState(null);
   const [qIndex, setQIndex] = useState(0);
@@ -195,6 +197,9 @@ export default function SpeakingLive({ phase, target }) {
     } catch (err) {
       setError(err?.message || "The coach couldn't respond just now — try that answer once more.");
       speaker.stop();
+      // ⚠ the meter gate MUST be released here — a stuck flag would mute
+      // the mic for every following turn ("STT failed" forever).
+      if (micRef.current) micRef.current.coachSpeaking = false;
       setStage('gate');
       micRef.current?.beginUtterance();
       return;
@@ -246,7 +251,10 @@ export default function SpeakingLive({ phase, target }) {
     const kind = s === 'gate' ? 'gate' : 'answer';
     setStage('thinking');
     setHeard('');
-    const answer = await micRef.current.endUtterance();
+    // Safety cap: if the meter never detected speech (dead context,
+    // blocked mic) don't leave the student hanging — end the turn anyway.
+    let answer = '';
+    try { answer = await micRef.current.endUtterance(); } catch { answer = ''; }
 
     if (kind === 'gate') {
       const choice = detectYesNo(answer);
@@ -290,6 +298,11 @@ export default function SpeakingLive({ phase, target }) {
       if (s === 'listening' && !mic.hasSpoken && !hintShownRef.current && mic.recording && now - turnStartRef.current > HEAR_HINT_MS) {
         hintShownRef.current = true;
         setMicHint("I can't hear you — check your microphone, or type your answer below.");
+      }
+      // Hard cap: a dead meter (suspended context, blocked mic) must never
+      // leave the student stuck listening forever.
+      if (s === 'listening' && !mic.hasSpoken && now - turnStartRef.current > 25_000) {
+        finishTurn();
       }
     }, 250);
     return () => clearInterval(iv);
@@ -347,6 +360,27 @@ export default function SpeakingLive({ phase, target }) {
 
   nextQuestionRef.current = nextQuestion;
   finishRef.current = finishConversation;
+
+  /* ── Skip speaking today: marks the module done (no band) so the
+   *    dashboard's §2.3 advance can move to the next day without it.
+   *    The backend excludes a skipped module from the overall band. ── */
+  const skipSpeaking = useCallback(() => {
+    speakerRef.current?.stop();
+    stopAllSpeech();
+    try { micRef.current?.close?.(); } catch { /* ignore */ }
+    micRef.current = null;
+    bankTime();
+    useDayStore.getState().patchModule('speaking', {
+      status: 'done',
+      score: null,
+      skipped: true,
+    });
+    useToastStore.getState().push(
+      'Speaking skipped — head to the dashboard and move to the next day.',
+      'info', 6500,
+    );
+    navigate('/');
+  }, [navigate, bankTime]);
 
   /* ── Start: ONE tap unlocks mic + audio, then it's all hands-free. ── */
   const startConversation = useCallback(async () => {
@@ -477,6 +511,9 @@ export default function SpeakingLive({ phase, target }) {
         </div>
         <div className="session-actions">
           <VoicePicker />
+          <button type="button" className="btn btn-ghost" onClick={skipSpeaking} disabled={stage === 'boot'}>
+            Skip speaking
+          </button>
           <button type="button" className="btn btn-ghost" onClick={finishConversation} disabled={stage === 'boot'}>
             End conversation
           </button>

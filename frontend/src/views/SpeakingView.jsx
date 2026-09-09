@@ -10,6 +10,7 @@
    ============================================================ */
 
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useProfileStore } from '../store/useProfileStore.js';
 import { useDayStore } from '../store/useDayStore.js';
 import SpeakingSession from '../components/speaking/SpeakingSession.jsx';
@@ -21,9 +22,36 @@ export default function SpeakingView() {
   const phase = useProfileStore((s) => s.profile?.phase);
   const target = useProfileStore((s) => s.profile?.targetBand) ?? 6.5;
   const status = useDayStore((s) => s.record?.speaking?.status);
+  const skipped = useDayStore((s) => s.record?.speaking?.skipped);
   const [mode, setMode] = useState('live');   // 'live' | 'exam'
 
   if (status === 'done') {
+    if (skipped) {
+      // Skipped today: no band exists — offer practice or the dashboard
+      // (the §2.3 advance already works without speaking).
+      return (
+        <div className="stack">
+          <section className="panel coach-panel">
+            <h2 className="title-3">Speaking skipped today</h2>
+            <p className="muted">
+              You chose to skip speaking, so today's overall band was calculated from the
+              other modules. You can still practice now — or head to the dashboard and
+              move to the next day.
+            </p>
+            <div className="coach-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => useDayStore.getState().resetModule('speaking')}
+              >
+                Practice now
+              </button>
+              <Link to="/" className="btn btn-ghost">Back to the dashboard</Link>
+            </div>
+          </section>
+        </div>
+      );
+    }
     return <SpeakingResults phase={phase} target={target} />;
   }
 

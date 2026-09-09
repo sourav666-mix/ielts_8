@@ -210,10 +210,16 @@ def advance_day(user: User) -> dict:
             ),
         )
 
-    # 2 ── module bands → overall (§9.4)
+    # 2 ── module bands → overall (§9.4). A module the student SKIPPED
+    #    (status done, `skipped: true`, no band) contributes nothing and
+    #    is excluded from the average; at least one scored module is
+    #    still required to advance.
     bands: dict[str, float] = {}
     for module in MODULES:
-        band = ((record.get(module) or {}).get("score") or {}).get("band")
+        module_data = record.get(module) or {}
+        if module_data.get("skipped"):
+            continue
+        band = (module_data.get("score") or {}).get("band")
         if not isinstance(band, (int, float)):
             raise HTTPException(
                 status_code=409,
@@ -223,6 +229,14 @@ def advance_day(user: User) -> dict:
                 ),
             )
         bands[module] = float(band)
+    if not bands:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Every module was skipped today — complete at least one "
+                "module to move to the next day."
+            ),
+        )
     overall = round_band(sum(bands.values()) / len(bands))
 
     # 3 ── streak (UTC calendar — see module docstring)
