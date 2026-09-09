@@ -13,7 +13,7 @@ import React, { useState } from 'react';
 import { useProfileStore } from '../store/useProfileStore.js';
 import { useDayStore } from '../store/useDayStore.js';
 import SpeakingSession from '../components/speaking/SpeakingSession.jsx';
-import ConversationCoach from '../components/speaking/ConversationCoach.jsx';
+import SpeakingLive from '../components/speaking/SpeakingLive.jsx';
 import SpeakingResults from '../components/speaking/SpeakingResults.jsx';
 import { cn } from '../lib/utils.js';
 
@@ -21,7 +21,7 @@ export default function SpeakingView() {
   const phase = useProfileStore((s) => s.profile?.phase);
   const target = useProfileStore((s) => s.profile?.targetBand) ?? 6.5;
   const status = useDayStore((s) => s.record?.speaking?.status);
-  const [mode, setMode] = useState('coach');   // 'coach' | 'exam'
+  const [mode, setMode] = useState('live');   // 'live' | 'exam'
 
   if (status === 'done') {
     return <SpeakingResults phase={phase} target={target} />;
@@ -32,10 +32,10 @@ export default function SpeakingView() {
       <div className="panel session-controls coach-tabs">
         <button
           type="button"
-          className={cn('btn', mode === 'coach' ? 'btn-primary' : 'btn-ghost')}
-          onClick={() => setMode('coach')}
+          className={cn('btn', mode === 'live' ? 'btn-primary' : 'btn-ghost')}
+          onClick={() => setMode('live')}
         >
-          Conversation Coach
+          Live conversation
         </button>
         <button
           type="button"
@@ -45,13 +45,13 @@ export default function SpeakingView() {
           Exam mode
         </button>
         <p className="muted coach-tabs-note">
-          {mode === 'coach'
-            ? 'A live back-and-forth: answer out loud, get spoken fixes instantly, keep going until you say stop.'
+          {mode === 'live'
+            ? 'A Gemini-style live conversation: talk out loud, get coached instantly, keep going until you say stop.'
             : 'The full exam structure — Part 1, the cue card long turn and Part 3, timed like test day.'}
         </p>
       </div>
-      {mode === 'coach'
-        ? <ConversationCoach key="coach" phase={phase} target={target} />
+      {mode === 'live'
+        ? <SpeakingLive key="live" phase={phase} target={target} />
         : <SpeakingSession key="exam" phase={phase} target={target} />}
     </div>
   );

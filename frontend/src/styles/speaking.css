@@ -497,3 +497,97 @@
 .coach-chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .coach-chips .chip { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border, #8891a5); background: transparent; cursor: pointer; font-size: 13px; }
 .coach-chips .chip-on { border-color: var(--accent, #6c8cff); background: rgba(108, 140, 255, 0.14); font-weight: 600; }
+
+/* ── §7.9 LIVE — Gemini-style 3D orb ─────────────────────────── */
+
+.orb-stage {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 26px 0 10px;
+  perspective: 900px;
+}
+
+.orb {
+  --level: 0;
+  --orb-size: 190px;
+  position: relative;
+  width: var(--orb-size);
+  height: var(--orb-size);
+  transform-style: preserve-3d;
+  transform: rotateX(12deg);
+  transition: transform 0.6s ease;
+}
+
+.orb-core {
+  position: absolute;
+  inset: 14%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0) 42%),
+    radial-gradient(circle at 68% 74%, rgba(108, 140, 255, 0.55), rgba(108, 140, 255, 0) 55%),
+    radial-gradient(circle at 50% 50%, #24304d, #101728 78%);
+  box-shadow:
+    0 0 calc(38px + var(--level) * 70px) rgba(108, 140, 255, calc(0.35 + var(--level) * 0.45)),
+    inset 0 0 34px rgba(140, 165, 255, 0.35);
+  transform: scale(calc(1 + var(--level) * 0.14));
+  transition: box-shadow 0.18s ease, transform 0.12s ease;
+  animation: orb-breathe 3.8s ease-in-out infinite;
+}
+
+.orb-glare {
+  position: absolute;
+  inset: 12% 55% 55% 12%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 70%);
+}
+
+.orb-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(130, 155, 255, 0.35);
+  transform: rotateX(68deg);
+}
+.orb-ring.r2 { inset: -12%; border-color: rgba(130, 155, 255, 0.22); animation: orb-spin 9s linear infinite; }
+.orb-ring.r3 { inset: 8%; border-color: rgba(180, 140, 255, 0.25); animation: orb-spin 6s linear infinite reverse; }
+
+@keyframes orb-spin { to { transform: rotateX(68deg) rotate(360deg); } }
+@keyframes orb-breathe { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.22); } }
+
+/* state colours + motion */
+.orb-listening .orb-core {
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255,255,255,0.85), rgba(255,255,255,0) 42%),
+    radial-gradient(circle at 68% 74%, rgba(80, 200, 255, 0.6), rgba(80, 200, 255, 0) 55%),
+    radial-gradient(circle at 50% 50%, #12314a, #0a1a2a 78%);
+  box-shadow: 0 0 calc(40px + var(--level) * 90px) rgba(80, 190, 255, calc(0.4 + var(--level) * 0.5)), inset 0 0 34px rgba(120, 210, 255, 0.4);
+  animation-duration: 2.2s;
+}
+.orb-listening .orb-ring { border-color: rgba(90, 200, 255, 0.5); }
+
+.orb-thinking .orb-core {
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255,255,255,0.8), rgba(255,255,255,0) 40%),
+    radial-gradient(circle at 50% 50%, #3a2c55, #150f26 78%);
+  animation: orb-breathe 1.1s ease-in-out infinite;
+}
+.orb-thinking .orb-ring { border-color: rgba(190, 150, 255, 0.5); animation: orb-spin 2.6s linear infinite; }
+.orb-thinking .orb-ring.r2 { animation-duration: 3.4s; }
+.orb-thinking .orb-ring.r3 { animation-duration: 2s; }
+
+.orb-speaking .orb-core {
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255,255,255,0.9), rgba(255,255,255,0) 42%),
+    radial-gradient(circle at 68% 74%, rgba(90, 235, 170, 0.6), rgba(90, 235, 170, 0) 55%),
+    radial-gradient(circle at 50% 50%, #0f3d2e, #08170f 78%);
+  box-shadow: 0 0 calc(44px + var(--level) * 80px) rgba(90, 235, 170, calc(0.4 + var(--level) * 0.5)), inset 0 0 36px rgba(120, 255, 190, 0.4);
+  animation: orb-talk 0.55s ease-in-out infinite;
+}
+.orb-speaking .orb-ring { border-color: rgba(110, 240, 180, 0.55); }
+
+@keyframes orb-talk { 0%, 100% { transform: scale(1.02); } 50% { transform: scale(1.09); } }
+
+.orb-caption { font-size: 17px; line-height: 1.5; text-align: center; max-width: 560px; margin: 0; }
+.orb-hint { color: #e5a13d; font-size: 14px; margin: 0; text-align: center; }
+
