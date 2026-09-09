@@ -1,3 +1,0 @@
-guest auth OK
-/tts: 200 | audio/wav | 136844 bytes | 2.5s | RIFF=True
-/stt: 200 | {"text":" ."} | 1.3s

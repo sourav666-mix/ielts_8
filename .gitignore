@@ -49,3 +49,13 @@ certs/
 # ── Local deployment-testing artifacts ────────────────────────
 atlas-test-token.txt
 _live_bundle.js
+
+# ── Local diagnostic artifacts ────────────────────────────────
+_diag_out.txt
+_git_out.txt
+_live_diag.py
+_skip_check.py
+_verify_out.txt
+_ssr_check.mjs
+_audio_probe.py
+_latency_probe.py
