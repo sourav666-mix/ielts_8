@@ -48,3 +48,4 @@ certs/
 
 # ── Local deployment-testing artifacts ────────────────────────
 atlas-test-token.txt
+_live_bundle.js
